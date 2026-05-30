@@ -53,4 +53,12 @@ class EloquentBatchRepository implements BatchRepositoryInterface
                 DB::raw('COALESCE(SUM(im.qty), 0) as available_qty'),
             ]);
     }
+
+    public function availableQtyByBatchAndProduct(int $batchId, int $productId): int
+    {
+        return (int) DB::table('inventory_movements')
+            ->where('batch_id', $batchId)
+            ->where('product_id', $productId)
+            ->sum('qty');
+    }
 }

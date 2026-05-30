@@ -14,4 +14,6 @@ interface BatchRepositoryInterface
     public function findOrFail(int $batchId): Batch;
 
     public function availableLotsByProduct(int $productId, int $storageId): Collection;
+
+    public function availableQtyByBatchAndProduct(int $batchId, int $productId): int;
 }
