@@ -12,4 +12,6 @@ interface ClientOrderRepositoryInterface
     public function createItems(ClientOrder $order, array $items): Collection;
 
     public function findOrFail(int $orderId): ClientOrder;
+
+    public function refundableItemsByOrderAndProduct(int $orderId, int $productId): Collection;
 }

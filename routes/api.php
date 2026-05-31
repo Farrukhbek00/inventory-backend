@@ -12,5 +12,6 @@ Route::prefix('purchases')->group(function (): void {
 
 Route::get('/products/available', [ReportController::class, 'availableProducts']);
 Route::post('/orders', [OrderController::class, 'store']);
+Route::post('/orders/refunds', [OrderController::class, 'refund']);
 Route::get('/storages/remaining', [ReportController::class, 'remainingProducts']);
 Route::get('/batches/profit', [ReportController::class, 'batchProfit']);
