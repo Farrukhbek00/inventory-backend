@@ -30,25 +30,30 @@ class EloquentBatchRepository implements BatchRepositoryInterface
         return Batch::query()->with(['items'])->findOrFail($batchId);
     }
 
-    public function availableLotsByProduct(int $productId, int $storageId): Collection
+    public function availableLotsByProduct(int $productId, ?int $storageId = null): Collection
     {
-        return DB::table('batch_items as bi')
+        $query = DB::table('batch_items as bi')
             ->join('batches as b', 'b.id', '=', 'bi.batch_id')
             ->leftJoin('inventory_movements as im', function ($join): void {
                 $join->on('im.batch_id', '=', 'b.id')
                     ->on('im.product_id', '=', 'bi.product_id');
             })
             ->where('bi.product_id', $productId)
-            ->where('b.storage_id', $storageId)
-            ->groupBy('bi.id', 'bi.batch_id', 'bi.product_id', 'bi.unit_cost', 'b.purchased_at')
+            ->groupBy('bi.id', 'bi.batch_id', 'bi.product_id', 'bi.unit_cost', 'b.storage_id', 'b.purchased_at')
             ->havingRaw('COALESCE(SUM(im.qty), 0) > 0')
             ->orderBy('b.purchased_at')
-            ->orderBy('bi.id')
-            ->get([
+            ->orderBy('bi.id');
+
+        if ($storageId !== null) {
+            $query->where('b.storage_id', $storageId);
+        }
+
+        return $query->get([
                 'bi.id as batch_item_id',
                 'bi.batch_id',
                 'bi.product_id',
                 'bi.unit_cost',
+                'b.storage_id',
                 'b.purchased_at',
                 DB::raw('COALESCE(SUM(im.qty), 0) as available_qty'),
             ]);

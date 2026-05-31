@@ -73,6 +73,35 @@ class InventoryWorkflowTest extends TestCase
         $this->assertSame(3, $items[1]->qty);
     }
 
+    public function test_order_can_be_created_without_storage_id(): void
+    {
+        [$provider, $storage, $product] = $this->makeBaseData();
+        $client = Client::query()->create([
+            'name' => 'Local Shop',
+            'code' => 'CL-5',
+        ]);
+
+        $this->buyProduct($provider->id, $storage->id, $product->id, 7, 10.00, '2026-05-02 08:00:00');
+
+        $orderResponse = $this->postJson('/api/orders', [
+            'client_id' => $client->id,
+            'products' => [
+                [
+                    'id' => $product->id,
+                    'qty' => 4,
+                    'unit_price' => 15.00,
+                ],
+            ],
+        ]);
+
+        $orderResponse->assertCreated();
+        $this->assertDatabaseCount('client_order_items', 1);
+
+        $remainingResponse = $this->getJson('/api/storages/remaining?date=2026-05-31&storage_id=' . $storage->id);
+        $remainingResponse->assertOk();
+        $remainingResponse->assertJsonPath('0.qty', 3);
+    }
+
     public function test_purchase_refund_rejects_qty_higher_than_unsold_stock(): void
     {
         [$provider, $storage, $product] = $this->makeBaseData();

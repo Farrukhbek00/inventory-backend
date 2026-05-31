@@ -15,7 +15,7 @@ class CreateClientOrderRequest extends FormRequest
     {
         return [
             'client_id' => ['required', 'integer', 'exists:clients,id'],
-            'storage_id' => ['required', 'integer', 'exists:storages,id'],
+            'storage_id' => ['nullable', 'integer', 'exists:storages,id'],
             'number' => ['nullable', 'string', 'max:64'],
             'ordered_at' => ['nullable', 'date'],
             'products' => ['required', 'array', 'min:1'],

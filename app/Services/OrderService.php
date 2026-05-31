@@ -42,13 +42,14 @@ class OrderService
 
             $orderItemsPayload = [];
             $movementRows = [];
+            $storageId = isset($payload['storage_id']) ? (int) $payload['storage_id'] : null;
 
             foreach ($payload['products'] as $row) {
                 $remaining = (int) $row['qty'];
                 $product = $products->get($row['id']);
                 $salePrice = $row['unit_price'] ?? $product->default_sale_price;
 
-                $lots = $this->batchRepository->availableLotsByProduct((int) $row['id'], (int) $payload['storage_id']);
+                $lots = $this->batchRepository->availableLotsByProduct((int) $row['id'], $storageId);
 
                 foreach ($lots as $lot) {
                     if ($remaining <= 0) {
@@ -71,7 +72,7 @@ class OrderService
                     ];
 
                     $movementRows[] = [
-                        'storage_id' => $payload['storage_id'],
+                        'storage_id' => (int) $lot->storage_id,
                         'product_id' => $row['id'],
                         'batch_id' => $lot->batch_id,
                         'movement_type' => InventoryMovementType::Sale->value,
