@@ -124,6 +124,111 @@ class InventoryWorkflowTest extends TestCase
         $remainingResponse->assertJsonPath('0.qty', 1);
     }
 
+    public function test_sale_refund_returns_stock_and_validates_limits(): void
+    {
+        [$provider, $storage, $product] = $this->makeBaseData();
+        $client = Client::query()->create([
+            'name' => 'Express Shop',
+            'code' => 'CL-3',
+        ]);
+
+        $this->buyProduct($provider->id, $storage->id, $product->id, 10, 9.00);
+
+        $orderResponse = $this->postJson('/api/orders', [
+            'client_id' => $client->id,
+            'storage_id' => $storage->id,
+            'products' => [
+                [
+                    'id' => $product->id,
+                    'qty' => 6,
+                    'unit_price' => 13.00,
+                ],
+            ],
+        ])->assertCreated();
+
+        $orderId = $orderResponse->json('order_id');
+
+        $this->postJson('/api/orders/refunds', [
+            'client_order_id' => $orderId,
+            'products' => [
+                [
+                    'id' => $product->id,
+                    'qty' => 7,
+                ],
+            ],
+        ])->assertStatus(422);
+
+        $this->postJson('/api/orders/refunds', [
+            'client_order_id' => $orderId,
+            'products' => [
+                [
+                    'id' => $product->id,
+                    'qty' => 4,
+                ],
+            ],
+        ])->assertCreated();
+
+        $remainingResponse = $this->getJson('/api/storages/remaining?date=2026-05-31&storage_id=' . $storage->id);
+        $remainingResponse->assertOk();
+        $remainingResponse->assertJsonPath('0.qty', 8);
+    }
+
+    public function test_batch_profit_is_calculated_correctly_with_refunds(): void
+    {
+        [$provider, $storage, $product] = $this->makeBaseData();
+        $client = Client::query()->create([
+            'name' => 'Market One',
+            'code' => 'CL-4',
+        ]);
+
+        $batch = $this->buyProduct($provider->id, $storage->id, $product->id, 10, 5.00);
+
+        $orderResponse = $this->postJson('/api/orders', [
+            'client_id' => $client->id,
+            'storage_id' => $storage->id,
+            'products' => [
+                [
+                    'id' => $product->id,
+                    'qty' => 6,
+                    'unit_price' => 8.00,
+                ],
+            ],
+        ])->assertCreated();
+
+        $this->postJson('/api/orders/refunds', [
+            'client_order_id' => $orderResponse->json('order_id'),
+            'products' => [
+                [
+                    'id' => $product->id,
+                    'qty' => 2,
+                ],
+            ],
+        ])->assertCreated();
+
+        $this->postJson('/api/purchases/refunds', [
+            'batch_id' => $batch->id,
+            'products' => [
+                [
+                    'id' => $product->id,
+                    'qty' => 1,
+                ],
+            ],
+        ])->assertCreated();
+
+        $profitResponse = $this->getJson('/api/batches/profit');
+        $profitResponse->assertOk();
+
+        $profitRow = collect($profitResponse->json())
+            ->firstWhere('id', $batch->id);
+
+        $this->assertNotNull($profitRow);
+        $this->assertEquals(50.0, (float) $profitRow['total_purchase_cost']);
+        $this->assertEquals(48.0, (float) $profitRow['gross_sales']);
+        $this->assertEquals(16.0, (float) $profitRow['sale_refunds_amount']);
+        $this->assertEquals(5.0, (float) $profitRow['purchase_refunds_amount']);
+        $this->assertEquals(-13.0, (float) $profitRow['profit']);
+    }
+
     private function makeBaseData(): array
     {
         $provider = Provider::query()->create([

@@ -73,23 +73,39 @@ class EloquentInventoryMovementRepository implements InventoryMovementRepository
 
     public function batchProfitSummary(): Collection
     {
+        $purchaseCosts = DB::table('batch_items')
+            ->select('batch_id', DB::raw('SUM(qty * unit_cost) as total_purchase_cost'))
+            ->groupBy('batch_id');
+
+        $sales = DB::table('client_order_items')
+            ->select('batch_id', DB::raw('SUM(qty * unit_price) as gross_sales'))
+            ->groupBy('batch_id');
+
+        $saleRefunds = DB::table('sale_refund_items as sri')
+            ->join('client_order_items as coi', 'coi.id', '=', 'sri.client_order_item_id')
+            ->select('coi.batch_id', DB::raw('SUM(sri.qty * sri.unit_price) as sale_refunds_amount'))
+            ->groupBy('coi.batch_id');
+
+        $purchaseRefunds = DB::table('purchase_refund_items as pri')
+            ->join('purchase_refunds as pr', 'pr.id', '=', 'pri.purchase_refund_id')
+            ->select('pr.batch_id', DB::raw('SUM(pri.qty * pri.unit_cost) as purchase_refunds_amount'))
+            ->groupBy('pr.batch_id');
+
         return DB::table('batches as b')
-            ->join('batch_items as bi', 'bi.batch_id', '=', 'b.id')
-            ->leftJoin('client_order_items as coi', 'coi.batch_id', '=', 'b.id')
-            ->leftJoin('sale_refund_items as sri', 'sri.client_order_item_id', '=', 'coi.id')
-            ->leftJoin('purchase_refunds as pr', 'pr.batch_id', '=', 'b.id')
-            ->leftJoin('purchase_refund_items as pri', 'pri.purchase_refund_id', '=', 'pr.id')
-            ->groupBy('b.id', 'b.number', 'b.purchased_at')
+            ->leftJoinSub($purchaseCosts, 'pc', fn ($join) => $join->on('pc.batch_id', '=', 'b.id'))
+            ->leftJoinSub($sales, 's', fn ($join) => $join->on('s.batch_id', '=', 'b.id'))
+            ->leftJoinSub($saleRefunds, 'sr', fn ($join) => $join->on('sr.batch_id', '=', 'b.id'))
+            ->leftJoinSub($purchaseRefunds, 'pr', fn ($join) => $join->on('pr.batch_id', '=', 'b.id'))
             ->orderBy('b.purchased_at')
             ->get([
                 'b.id',
                 'b.number',
                 'b.purchased_at',
-                DB::raw('SUM(bi.qty * bi.unit_cost) as total_purchase_cost'),
-                DB::raw('COALESCE(SUM(coi.qty * coi.unit_price), 0) as gross_sales'),
-                DB::raw('COALESCE(SUM(sri.qty * sri.unit_price), 0) as sale_refunds_amount'),
-                DB::raw('COALESCE(SUM(pri.qty * pri.unit_cost), 0) as purchase_refunds_amount'),
-                DB::raw('(COALESCE(SUM(coi.qty * coi.unit_price), 0) - COALESCE(SUM(sri.qty * sri.unit_price), 0)) - (SUM(bi.qty * bi.unit_cost) - COALESCE(SUM(pri.qty * pri.unit_cost), 0)) as profit'),
+                DB::raw('COALESCE(pc.total_purchase_cost, 0) as total_purchase_cost'),
+                DB::raw('COALESCE(s.gross_sales, 0) as gross_sales'),
+                DB::raw('COALESCE(sr.sale_refunds_amount, 0) as sale_refunds_amount'),
+                DB::raw('COALESCE(pr.purchase_refunds_amount, 0) as purchase_refunds_amount'),
+                DB::raw('(COALESCE(s.gross_sales, 0) - COALESCE(sr.sale_refunds_amount, 0)) - (COALESCE(pc.total_purchase_cost, 0) - COALESCE(pr.purchase_refunds_amount, 0)) as profit'),
             ]);
     }
 }
