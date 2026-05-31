@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Enums\InventoryMovementType;
+use App\Models\BatchItem;
 use App\Repositories\Contracts\BatchRepositoryInterface;
 use App\Repositories\Contracts\InventoryMovementRepositoryInterface;
 use App\Repositories\Contracts\ProductRepositoryInterface;
@@ -83,7 +84,8 @@ class PurchaseService
             $refundItems = [];
 
             foreach ($payload['products'] as $row) {
-                $batchItem = $batchItems->get($row['id']);
+                /** @var BatchItem|null $batchItem */
+                $batchItem = $batchItems->get((int) $row['id']);
 
                 if ($batchItem === null) {
                     throw ValidationException::withMessages([
@@ -112,26 +114,24 @@ class PurchaseService
                 'reason' => $payload['reason'] ?? null,
             ]);
 
-            $createdItems = $this->purchaseRefundRepository->createItems($refund, $refundItems);
+            $this->purchaseRefundRepository->createItems($refund, $refundItems);
 
-            $movementRows = $createdItems->map(function ($item) use ($batch, $batchItems, $refundedAt, $refund): array {
-                $productId = (int) $batchItems
-                    ->firstWhere('id', $item->batch_item_id)
-                    ?->product_id;
-
-                return [
-                    'storage_id' => $batch->storage_id,
-                    'product_id' => $productId,
-                    'batch_id' => $batch->id,
-                    'movement_type' => InventoryMovementType::PurchaseRefund->value,
-                    'reference_type' => $refund->getMorphClass(),
-                    'reference_id' => $refund->id,
-                    'qty' => -1 * (int) $item->qty,
-                    'occurred_at' => $refundedAt,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ];
-            })->all();
+            $movementRows = collect($payload['products'])
+                ->map(function (array $row) use ($batch, $refundedAt, $refund): array {
+                    return [
+                        'storage_id' => $batch->storage_id,
+                        'product_id' => (int) $row['id'],
+                        'batch_id' => $batch->id,
+                        'movement_type' => InventoryMovementType::PurchaseRefund->value,
+                        'reference_type' => $refund->getMorphClass(),
+                        'reference_id' => $refund->id,
+                        'qty' => -1 * (int) $row['qty'],
+                        'occurred_at' => $refundedAt,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ];
+                })
+                ->all();
 
             $this->inventoryMovementRepository->createMany($movementRows);
 
