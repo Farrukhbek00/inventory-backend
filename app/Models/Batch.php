@@ -30,13 +30,8 @@ class Batch extends Model
         return $this->belongsTo(Storage::class);
     }
 
-    public function items(): HasMany
+    public function ledgerEntries(): HasMany
     {
-        return $this->hasMany(BatchItem::class);
-    }
-
-    public function purchaseRefunds(): HasMany
-    {
-        return $this->hasMany(PurchaseRefund::class);
+        return $this->hasMany(InventoryLedger::class);
     }
 }

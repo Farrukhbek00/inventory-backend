@@ -25,13 +25,8 @@ class ClientOrder extends Model
         return $this->belongsTo(Client::class);
     }
 
-    public function items(): HasMany
+    public function ledgerEntries(): HasMany
     {
-        return $this->hasMany(ClientOrderItem::class);
-    }
-
-    public function saleRefunds(): HasMany
-    {
-        return $this->hasMany(SaleRefund::class);
+        return $this->hasMany(InventoryLedger::class);
     }
 }
