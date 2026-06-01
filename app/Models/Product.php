@@ -25,8 +25,8 @@ class Product extends Model
         return $this->belongsTo(Category::class);
     }
 
-    public function batchItems(): HasMany
+    public function ledgerEntries(): HasMany
     {
-        return $this->hasMany(BatchItem::class);
+        return $this->hasMany(InventoryLedger::class);
     }
 }

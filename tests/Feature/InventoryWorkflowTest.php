@@ -5,7 +5,7 @@ namespace Tests\Feature;
 use App\Models\Batch;
 use App\Models\Category;
 use App\Models\Client;
-use App\Models\ClientOrderItem;
+use App\Models\InventoryLedger;
 use App\Models\Product;
 use App\Models\Provider;
 use App\Models\Storage;
@@ -16,7 +16,7 @@ class InventoryWorkflowTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_purchase_adds_products_and_available_endpoint_returns_qty(): void
+    public function test_purchase_records_ledger_and_available_endpoint_returns_qty(): void
     {
         [$provider, $storage, $product] = $this->makeBaseData();
 
@@ -24,15 +24,13 @@ class InventoryWorkflowTest extends TestCase
             'provider_id' => $provider->id,
             'storage_id' => $storage->id,
             'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 20,
-                    'unit_cost' => 12.50,
-                ],
+                ['id' => $product->id, 'qty' => 20, 'unit_cost' => 12.50],
             ],
         ]);
 
         $response->assertCreated();
+
+        $this->assertDatabaseCount('inventory_ledger', 1);
 
         $availableResponse = $this->getJson('/api/products/available?storage_id=' . $storage->id);
         $availableResponse->assertOk();
@@ -43,10 +41,7 @@ class InventoryWorkflowTest extends TestCase
     public function test_order_uses_fifo_batches_automatically(): void
     {
         [$provider, $storage, $product] = $this->makeBaseData();
-        $client = Client::query()->create([
-            'name' => 'Retail Hub',
-            'code' => 'CL-1',
-        ]);
+        $client = Client::query()->create(['name' => 'Retail Hub', 'code' => 'CL-1']);
 
         $firstBatch = $this->buyProduct($provider->id, $storage->id, $product->id, 5, 10.00, '2026-05-01 08:00:00');
         $secondBatch = $this->buyProduct($provider->id, $storage->id, $product->id, 10, 11.00, '2026-05-03 08:00:00');
@@ -55,49 +50,39 @@ class InventoryWorkflowTest extends TestCase
             'client_id' => $client->id,
             'storage_id' => $storage->id,
             'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 8,
-                    'unit_price' => 15.00,
-                ],
+                ['id' => $product->id, 'qty' => 8, 'unit_price' => 15.00],
             ],
         ]);
 
         $orderResponse->assertCreated();
 
-        $items = ClientOrderItem::query()->orderBy('id')->get();
-        $this->assertCount(2, $items);
-        $this->assertSame($firstBatch->id, $items[0]->batch_id);
-        $this->assertSame(5, $items[0]->qty);
-        $this->assertSame($secondBatch->id, $items[1]->batch_id);
-        $this->assertSame(3, $items[1]->qty);
+        $sales = InventoryLedger::query()
+            ->where('event_type', 'sale')
+            ->orderBy('id')
+            ->get();
+
+        $this->assertCount(2, $sales);
+        $this->assertSame($firstBatch->id, $sales[0]->batch_id);
+        $this->assertSame(-5, $sales[0]->qty_signed);
+        $this->assertSame($secondBatch->id, $sales[1]->batch_id);
+        $this->assertSame(-3, $sales[1]->qty_signed);
     }
 
     public function test_order_can_be_created_without_storage_id(): void
     {
         [$provider, $storage, $product] = $this->makeBaseData();
-        $client = Client::query()->create([
-            'name' => 'Local Shop',
-            'code' => 'CL-5',
-        ]);
+        $client = Client::query()->create(['name' => 'Local Shop', 'code' => 'CL-5']);
 
         $this->buyProduct($provider->id, $storage->id, $product->id, 7, 10.00, '2026-05-02 08:00:00');
 
-        $orderResponse = $this->postJson('/api/orders', [
+        $this->postJson('/api/orders', [
             'client_id' => $client->id,
             'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 4,
-                    'unit_price' => 15.00,
-                ],
+                ['id' => $product->id, 'qty' => 4, 'unit_price' => 15.00],
             ],
-        ]);
+        ])->assertCreated();
 
-        $orderResponse->assertCreated();
-        $this->assertDatabaseCount('client_order_items', 1);
-
-        $remainingResponse = $this->getJson('/api/storages/remaining?date=2026-05-31&storage_id=' . $storage->id);
+        $remainingResponse = $this->getJson('/api/storages/remaining?date=2030-12-31&storage_id=' . $storage->id);
         $remainingResponse->assertOk();
         $remainingResponse->assertJsonPath('0.qty', 3);
     }
@@ -105,10 +90,7 @@ class InventoryWorkflowTest extends TestCase
     public function test_purchase_refund_rejects_qty_higher_than_unsold_stock(): void
     {
         [$provider, $storage, $product] = $this->makeBaseData();
-        $client = Client::query()->create([
-            'name' => 'Corner Shop',
-            'code' => 'CL-2',
-        ]);
+        $client = Client::query()->create(['name' => 'Corner Shop', 'code' => 'CL-2']);
 
         $batch = $this->buyProduct($provider->id, $storage->id, $product->id, 10, 9.50);
 
@@ -116,39 +98,25 @@ class InventoryWorkflowTest extends TestCase
             'client_id' => $client->id,
             'storage_id' => $storage->id,
             'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 4,
-                    'unit_price' => 13.00,
-                ],
+                ['id' => $product->id, 'qty' => 4, 'unit_price' => 13.00],
             ],
         ])->assertCreated();
 
-        $invalidRefund = $this->postJson('/api/purchases/refunds', [
+        $this->postJson('/api/purchases/refunds', [
             'batch_id' => $batch->id,
             'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 7,
-                ],
+                ['id' => $product->id, 'qty' => 7],
             ],
-        ]);
+        ])->assertStatus(422);
 
-        $invalidRefund->assertStatus(422);
-
-        $validRefund = $this->postJson('/api/purchases/refunds', [
+        $this->postJson('/api/purchases/refunds', [
             'batch_id' => $batch->id,
             'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 5,
-                ],
+                ['id' => $product->id, 'qty' => 5],
             ],
-        ]);
+        ])->assertCreated();
 
-        $validRefund->assertCreated();
-
-        $remainingResponse = $this->getJson('/api/storages/remaining?date=2026-05-31&storage_id=' . $storage->id);
+        $remainingResponse = $this->getJson('/api/storages/remaining?date=2030-12-31&storage_id=' . $storage->id);
         $remainingResponse->assertOk();
         $remainingResponse->assertJsonPath('0.qty', 1);
     }
@@ -156,10 +124,7 @@ class InventoryWorkflowTest extends TestCase
     public function test_sale_refund_returns_stock_and_validates_limits(): void
     {
         [$provider, $storage, $product] = $this->makeBaseData();
-        $client = Client::query()->create([
-            'name' => 'Express Shop',
-            'code' => 'CL-3',
-        ]);
+        $client = Client::query()->create(['name' => 'Express Shop', 'code' => 'CL-3']);
 
         $this->buyProduct($provider->id, $storage->id, $product->id, 10, 9.00);
 
@@ -167,11 +132,7 @@ class InventoryWorkflowTest extends TestCase
             'client_id' => $client->id,
             'storage_id' => $storage->id,
             'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 6,
-                    'unit_price' => 13.00,
-                ],
+                ['id' => $product->id, 'qty' => 6, 'unit_price' => 13.00],
             ],
         ])->assertCreated();
 
@@ -179,25 +140,15 @@ class InventoryWorkflowTest extends TestCase
 
         $this->postJson('/api/orders/refunds', [
             'client_order_id' => $orderId,
-            'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 7,
-                ],
-            ],
+            'products' => [['id' => $product->id, 'qty' => 7]],
         ])->assertStatus(422);
 
         $this->postJson('/api/orders/refunds', [
             'client_order_id' => $orderId,
-            'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 4,
-                ],
-            ],
+            'products' => [['id' => $product->id, 'qty' => 4]],
         ])->assertCreated();
 
-        $remainingResponse = $this->getJson('/api/storages/remaining?date=2026-05-31&storage_id=' . $storage->id);
+        $remainingResponse = $this->getJson('/api/storages/remaining?date=2030-12-31&storage_id=' . $storage->id);
         $remainingResponse->assertOk();
         $remainingResponse->assertJsonPath('0.qty', 8);
     }
@@ -205,50 +156,30 @@ class InventoryWorkflowTest extends TestCase
     public function test_batch_profit_is_calculated_correctly_with_refunds(): void
     {
         [$provider, $storage, $product] = $this->makeBaseData();
-        $client = Client::query()->create([
-            'name' => 'Market One',
-            'code' => 'CL-4',
-        ]);
+        $client = Client::query()->create(['name' => 'Market One', 'code' => 'CL-4']);
 
         $batch = $this->buyProduct($provider->id, $storage->id, $product->id, 10, 5.00);
 
         $orderResponse = $this->postJson('/api/orders', [
             'client_id' => $client->id,
             'storage_id' => $storage->id,
-            'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 6,
-                    'unit_price' => 8.00,
-                ],
-            ],
+            'products' => [['id' => $product->id, 'qty' => 6, 'unit_price' => 8.00]],
         ])->assertCreated();
 
         $this->postJson('/api/orders/refunds', [
             'client_order_id' => $orderResponse->json('order_id'),
-            'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 2,
-                ],
-            ],
+            'products' => [['id' => $product->id, 'qty' => 2]],
         ])->assertCreated();
 
         $this->postJson('/api/purchases/refunds', [
             'batch_id' => $batch->id,
-            'products' => [
-                [
-                    'id' => $product->id,
-                    'qty' => 1,
-                ],
-            ],
+            'products' => [['id' => $product->id, 'qty' => 1]],
         ])->assertCreated();
 
         $profitResponse = $this->getJson('/api/batches/profit');
         $profitResponse->assertOk();
 
-        $profitRow = collect($profitResponse->json())
-            ->firstWhere('id', $batch->id);
+        $profitRow = collect($profitResponse->json())->firstWhere('id', $batch->id);
 
         $this->assertNotNull($profitRow);
         $this->assertEquals(50.0, (float) $profitRow['total_purchase_cost']);
@@ -260,10 +191,7 @@ class InventoryWorkflowTest extends TestCase
 
     private function makeBaseData(): array
     {
-        $provider = Provider::query()->create([
-            'name' => 'Ahmad Tea',
-            'code' => 'PV-1',
-        ]);
+        $provider = Provider::query()->create(['name' => 'Ahmad Tea', 'code' => 'PV-1']);
 
         $rootCategory = Category::query()->create([
             'name' => 'Ahmad Tea',
@@ -282,10 +210,7 @@ class InventoryWorkflowTest extends TestCase
             'default_sale_price' => 14.00,
         ]);
 
-        $storage = Storage::query()->create([
-            'name' => 'Main Storage',
-            'code' => 'ST-1',
-        ]);
+        $storage = Storage::query()->create(['name' => 'Main Storage', 'code' => 'ST-1']);
 
         return [$provider, $storage, $product];
     }
@@ -302,11 +227,7 @@ class InventoryWorkflowTest extends TestCase
             'provider_id' => $providerId,
             'storage_id' => $storageId,
             'products' => [
-                [
-                    'id' => $productId,
-                    'qty' => $qty,
-                    'unit_cost' => $unitCost,
-                ],
+                ['id' => $productId, 'qty' => $qty, 'unit_cost' => $unitCost],
             ],
         ];
 

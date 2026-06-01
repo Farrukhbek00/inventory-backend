@@ -17,8 +17,8 @@ class Storage extends Model
         return $this->hasMany(Batch::class);
     }
 
-    public function inventoryMovements(): HasMany
+    public function ledgerEntries(): HasMany
     {
-        return $this->hasMany(InventoryMovement::class);
+        return $this->hasMany(InventoryLedger::class);
     }
 }
