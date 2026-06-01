@@ -2,31 +2,32 @@
 
 namespace App\Services;
 
-use App\Repositories\Contracts\InventoryMovementRepositoryInterface;
+use App\Repositories\Contracts\LedgerRepositoryInterface;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
 class InventoryReportService
 {
     public function __construct(
-        private readonly InventoryMovementRepositoryInterface $inventoryMovementRepository,
+        private readonly LedgerRepositoryInterface $ledgerRepository,
     ) {
     }
 
     public function availableProducts(?int $storageId = null): Collection
     {
-        return $this->inventoryMovementRepository->availableProducts($storageId);
+        return $this->ledgerRepository->availableProducts($storageId);
     }
 
     public function remainingProductsByDate(string $date, ?int $storageId = null): Collection
     {
-        $dateTime = Carbon::parse($date)->endOfDay();
-
-        return $this->inventoryMovementRepository->remainingProductsByDate($dateTime, $storageId);
+        return $this->ledgerRepository->remainingProductsByDate(
+            Carbon::parse($date)->endOfDay(),
+            $storageId,
+        );
     }
 
     public function batchProfitSummary(): Collection
     {
-        return $this->inventoryMovementRepository->batchProfitSummary();
+        return $this->ledgerRepository->batchProfitSummary();
     }
 }

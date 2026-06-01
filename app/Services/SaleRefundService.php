@@ -4,8 +4,7 @@ namespace App\Services;
 
 use App\Enums\InventoryMovementType;
 use App\Repositories\Contracts\ClientOrderRepositoryInterface;
-use App\Repositories\Contracts\InventoryMovementRepositoryInterface;
-use App\Repositories\Contracts\SaleRefundRepositoryInterface;
+use App\Repositories\Contracts\LedgerRepositoryInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -13,23 +12,32 @@ class SaleRefundService
 {
     public function __construct(
         private readonly ClientOrderRepositoryInterface $clientOrderRepository,
-        private readonly SaleRefundRepositoryInterface $saleRefundRepository,
-        private readonly InventoryMovementRepositoryInterface $inventoryMovementRepository,
+        private readonly LedgerRepositoryInterface $ledgerRepository,
     ) {
     }
 
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
     public function refund(array $payload): array
     {
         return DB::transaction(function () use ($payload): array {
-            $order = $this->clientOrderRepository->findOrFail($payload['client_order_id']);
+            $order = $this->clientOrderRepository->findOrFail((int) $payload['client_order_id']);
             $refundedAt = $payload['refunded_at'] ?? now()->toDateTimeString();
+            $documentNo = $payload['number'] ?? $this->generateNumber();
+            $now = now()->toDateTimeString();
 
-            $refundItems = [];
-            $movementRows = [];
+            $productIds = collect($payload['products'])->pluck('id')->map('intval')->unique()->values()->all();
+            $lotsByProduct = $this->ledgerRepository
+                ->refundableSalesByOrder($order->id, $productIds)
+                ->groupBy('product_id');
 
-            foreach ($payload['products'] as $row) {
-                $remaining = (int) $row['qty'];
-                $lots = $this->clientOrderRepository->refundableItemsByOrderAndProduct($order->id, (int) $row['id']);
+            $rows = [];
+            foreach ($payload['products'] as $line) {
+                $productId = (int) $line['id'];
+                $remaining = (int) $line['qty'];
+                $lots = $lotsByProduct->get($productId, collect());
 
                 foreach ($lots as $lot) {
                     if ($remaining <= 0) {
@@ -41,59 +49,38 @@ class SaleRefundService
                         continue;
                     }
 
-                    $pickedQty = min($remaining, $available);
+                    $picked = min($remaining, $available);
 
-                    $refundItems[] = [
-                        'client_order_item_id' => $lot->client_order_item_id,
-                        'qty' => $pickedQty,
-                        'unit_price' => $lot->unit_price,
+                    $rows[] = [
+                        'product_id' => $productId,
+                        'storage_id' => (int) $lot->storage_id,
+                        'batch_id' => (int) $lot->batch_id,
+                        'client_order_id' => $order->id,
+                        'event_type' => InventoryMovementType::SaleRefund->value,
+                        'document_no' => $documentNo,
+                        'qty_signed' => $picked,
                         'unit_cost' => $lot->unit_cost,
-                    ];
-
-                    $movementRows[] = [
-                        'storage_id' => $lot->storage_id,
-                        'product_id' => $row['id'],
-                        'batch_id' => $lot->batch_id,
-                        'movement_type' => InventoryMovementType::SaleRefund->value,
-                        'reference_type' => $order->getMorphClass(),
-                        'reference_id' => $order->id,
-                        'qty' => $pickedQty,
+                        'unit_price' => $lot->unit_price,
                         'occurred_at' => $refundedAt,
-                        'created_at' => now(),
-                        'updated_at' => now(),
+                        'created_at' => $now,
+                        'updated_at' => $now,
                     ];
 
-                    $remaining -= $pickedQty;
+                    $remaining -= $picked;
                 }
 
                 if ($remaining > 0) {
                     throw ValidationException::withMessages([
-                        'products' => ["Refund quantity is too high for product {$row['id']}."],
+                        'products' => ["Refund quantity is too high for product {$productId}."],
                     ]);
                 }
             }
 
-            $refund = $this->saleRefundRepository->create([
-                'client_order_id' => $order->id,
-                'number' => $payload['number'] ?? $this->generateNumber(),
-                'refunded_at' => $refundedAt,
-                'reason' => $payload['reason'] ?? null,
-            ]);
-
-            $this->saleRefundRepository->createItems($refund, $refundItems);
-
-            $movementRows = collect($movementRows)
-                ->map(fn (array $row): array => $row + [
-                    'reference_type' => $refund->getMorphClass(),
-                    'reference_id' => $refund->id,
-                ])
-                ->all();
-
-            $this->inventoryMovementRepository->createMany($movementRows);
+            $this->ledgerRepository->insertMany($rows);
 
             return [
-                'sale_refund_id' => $refund->id,
-                'sale_refund_number' => $refund->number,
+                'sale_refund_number' => $documentNo,
+                'order_id' => $order->id,
             ];
         });
     }

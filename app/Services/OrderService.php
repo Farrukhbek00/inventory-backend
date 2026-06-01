@@ -3,9 +3,8 @@
 namespace App\Services;
 
 use App\Enums\InventoryMovementType;
-use App\Repositories\Contracts\BatchRepositoryInterface;
 use App\Repositories\Contracts\ClientOrderRepositoryInterface;
-use App\Repositories\Contracts\InventoryMovementRepositoryInterface;
+use App\Repositories\Contracts\LedgerRepositoryInterface;
 use App\Repositories\Contracts\ProductRepositoryInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -13,25 +12,20 @@ use Illuminate\Validation\ValidationException;
 class OrderService
 {
     public function __construct(
-        private readonly BatchRepositoryInterface $batchRepository,
         private readonly ClientOrderRepositoryInterface $clientOrderRepository,
         private readonly ProductRepositoryInterface $productRepository,
-        private readonly InventoryMovementRepositoryInterface $inventoryMovementRepository,
+        private readonly LedgerRepositoryInterface $ledgerRepository,
     ) {
     }
 
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
     public function createOrder(array $payload): array
     {
         return DB::transaction(function () use ($payload): array {
-            $orderedAt = $payload['ordered_at'] ?? now()->toDateTimeString();
-
-            $order = $this->clientOrderRepository->create([
-                'client_id' => $payload['client_id'],
-                'number' => $payload['number'] ?? $this->generateNumber(),
-                'ordered_at' => $orderedAt,
-            ]);
-
-            $productIds = collect($payload['products'])->pluck('id')->unique()->values()->all();
+            $productIds = collect($payload['products'])->pluck('id')->map('intval')->unique()->values()->all();
             $products = $this->productRepository->findManyByIds($productIds)->keyBy('id');
 
             if ($products->count() !== count($productIds)) {
@@ -40,16 +34,27 @@ class OrderService
                 ]);
             }
 
-            $orderItemsPayload = [];
-            $movementRows = [];
+            $orderedAt = $payload['ordered_at'] ?? now()->toDateTimeString();
             $storageId = isset($payload['storage_id']) ? (int) $payload['storage_id'] : null;
 
-            foreach ($payload['products'] as $row) {
-                $remaining = (int) $row['qty'];
-                $product = $products->get($row['id']);
-                $salePrice = $row['unit_price'] ?? $product->default_sale_price;
+            $order = $this->clientOrderRepository->create([
+                'client_id' => $payload['client_id'],
+                'number' => $payload['number'] ?? $this->generateNumber(),
+                'ordered_at' => $orderedAt,
+            ]);
 
-                $lots = $this->batchRepository->availableLotsByProduct((int) $row['id'], $storageId);
+            $lotsByProduct = $this->ledgerRepository
+                ->availableLotsForProducts($productIds, $storageId)
+                ->groupBy('product_id');
+
+            $now = now()->toDateTimeString();
+            $rows = [];
+
+            foreach ($payload['products'] as $line) {
+                $productId = (int) $line['id'];
+                $remaining = (int) $line['qty'];
+                $salePrice = $line['unit_price'] ?? $products[$productId]->default_sale_price;
+                $lots = $lotsByProduct->get($productId, collect());
 
                 foreach ($lots as $lot) {
                     if ($remaining <= 0) {
@@ -61,41 +66,34 @@ class OrderService
                         continue;
                     }
 
-                    $pickedQty = min($remaining, $available);
+                    $picked = min($remaining, $available);
 
-                    $orderItemsPayload[] = [
-                        'product_id' => $row['id'],
-                        'batch_id' => $lot->batch_id,
-                        'qty' => $pickedQty,
-                        'unit_price' => $salePrice,
-                        'unit_cost' => $lot->unit_cost,
-                    ];
-
-                    $movementRows[] = [
+                    $rows[] = [
+                        'product_id' => $productId,
                         'storage_id' => (int) $lot->storage_id,
-                        'product_id' => $row['id'],
-                        'batch_id' => $lot->batch_id,
-                        'movement_type' => InventoryMovementType::Sale->value,
-                        'reference_type' => $order->getMorphClass(),
-                        'reference_id' => $order->id,
-                        'qty' => -1 * $pickedQty,
+                        'batch_id' => (int) $lot->batch_id,
+                        'client_order_id' => $order->id,
+                        'event_type' => InventoryMovementType::Sale->value,
+                        'document_no' => $order->number,
+                        'qty_signed' => -$picked,
+                        'unit_cost' => $lot->unit_cost,
+                        'unit_price' => $salePrice,
                         'occurred_at' => $orderedAt,
-                        'created_at' => now(),
-                        'updated_at' => now(),
+                        'created_at' => $now,
+                        'updated_at' => $now,
                     ];
 
-                    $remaining -= $pickedQty;
+                    $remaining -= $picked;
                 }
 
                 if ($remaining > 0) {
                     throw ValidationException::withMessages([
-                        'products' => ["Insufficient stock for product {$row['id']}."],
+                        'products' => ["Insufficient stock for product {$productId}."],
                     ]);
                 }
             }
 
-            $this->clientOrderRepository->createItems($order, $orderItemsPayload);
-            $this->inventoryMovementRepository->createMany($movementRows);
+            $this->ledgerRepository->insertMany($rows);
 
             return [
                 'order_id' => $order->id,
